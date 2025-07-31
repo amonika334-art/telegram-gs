@@ -1,121 +1,105 @@
+import logging
 import asyncio
-import json
-import os
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
     CommandHandler,
     MessageHandler,
-    filters
+    filters,
+    ContextTypes,
+)
+import os
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+# --- Налаштування прав ---
+ALLOWED_USERS = {
+    "чат": [],  # Сюди ID користувачів, яким дозволено писати в гілку "чат"
+    "аналітика": [],  # інші гілки за потреби
+}
+
+DELETE_TIMEOUTS = {
+    "чат": timedelta(days=2),
+    "аналітика": timedelta(weeks=1)
+}
+
+# --- Логування ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-SETTINGS_FILE = "settings.json"
+# --- Обробник /start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привіт! Я чат-бот контролю. Напиши /допомога")
 
-# Завантаження налаштувань
-def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"permissions": {}, "autodelete": {}}
+# --- Обробник /допомога ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/дозвіл [гілка] [user_id] — дозволити користувачу писати в гілку
+"
+        "/очищення [гілка] [кількість_днів|тижнів] — встановити автоочищення
+"
+    )
 
-# Збереження налаштувань
-def save_settings(settings):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-
-settings = load_settings()
-
-# Перевірка чи користувач — адміністратор
-async def is_admin(update: Update):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    member = await update.get_bot().get_chat_member(chat_id, user_id)
-    return member.status in ["administrator", "creator"]
-
-# Команда /дозволити
-async def дозволити(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update): return
-    if len(context.args) != 3 or context.args[1] != "в":
-        await update.message.reply_text("Приклад: /дозволити @user в чат")
-        return
-    user = context.args[0]
-    topic = context.args[2].lower()
-    settings["permissions"].setdefault(topic, [])
-    if user not in settings["permissions"][topic]:
-        settings["permissions"][topic].append(user)
-        save_settings(settings)
-    await update.message.reply_text(f"✅ {user} може писати в темі {topic}")
-
-# Команда /заборонити
-async def заборонити(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update): return
-    if len(context.args) != 3 or context.args[1] != "в":
-        await update.message.reply_text("Приклад: /заборонити @user в чат")
-        return
-    user = context.args[0]
-    topic = context.args[2].lower()
-    if topic in settings["permissions"] and user in settings["permissions"][topic]:
-        settings["permissions"][topic].remove(user)
-        save_settings(settings)
-    await update.message.reply_text(f"🚫 {user} більше не може писати в темі {topic}")
-
-# Команда /автовидалення
-async def автовидалення(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update): return
+# --- Обробка дозволу ---
+async def allow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
-        await update.message.reply_text("Приклад: /автовидалення чат 2д або /автовидалення чат викл")
+        await update.message.reply_text("Формат: /дозвіл [гілка] [user_id]")
         return
-    topic = context.args[0].lower()
-    val = context.args[1]
-    if val == "викл":
-        settings["autodelete"].pop(topic, None)
-        save_settings(settings)
-        await update.message.reply_text(f"🛑 Автовидалення для теми {topic} вимкнено")
+    thread, user_id = context.args
+    if thread not in ALLOWED_USERS:
+        await update.message.reply_text("Невідома гілка.")
+        return
+    ALLOWED_USERS[thread].append(int(user_id))
+    await update.message.reply_text(f"Користувачу {user_id} дозволено писати в гілку {thread}.")
+
+# --- Обробка автоочищення ---
+async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 2:
+        await update.message.reply_text("Формат: /очищення [гілка] [час]")
+        return
+    thread, time = context.args
+    if "тиж" in time:
+        days = int(time.split("тиж")[0]) * 7
     else:
-        if val.endswith("д"):
-            seconds = int(val[:-1]) * 86400
-        elif val.endswith("т"):
-            seconds = int(val[:-1]) * 604800
-        else:
-            await update.message.reply_text("⚠️ Вкажіть кількість днів (2д) або тижнів (1т)")
-            return
-        settings["autodelete"][topic] = seconds
-        save_settings(settings)
-        await update.message.reply_text(f"⏱ Автовидалення в темі {topic} через {val}")
+        days = int(time)
+    DELETE_TIMEOUTS[thread] = timedelta(days=days)
+    await update.message.reply_text(f"Очищення гілки {thread} встановлено на {days} днів.")
 
-# Обробка повідомлень
+# --- Обробка повідомлень ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    user = message.from_user
-    username = f"@{user.username}" if user.username else f"id:{user.id}"
-    topic_id = str(message.message_thread_id) if message.message_thread_id else "default"
+    msg = update.message
+    thread = msg.message_thread_id or "чат"  # За замовчуванням - гілка "чат"
+    user_id = msg.from_user.id
 
-    # Автовидалення
-    if topic_id in settings["autodelete"]:
-        delay = settings["autodelete"][topic_id]
-        await asyncio.sleep(delay)
-        try: await message.delete()
-        except: pass
+    thread_str = "чат"  # Можна додати логіку для відповідності ID гілці
+    allowed = ALLOWED_USERS.get(thread_str, [])
+
+    if allowed and user_id not in allowed:
+        try:
+            await msg.delete()
+        except:
+            pass
         return
 
-    # Перевірка дозволу
-    if topic_id in settings["permissions"]:
-        if username not in settings["permissions"][topic_id]:
-            try: await message.delete()
-            except: pass
+    timeout = DELETE_TIMEOUTS.get(thread_str)
+    if timeout:
+        await asyncio.sleep(timeout.total_seconds())
+        try:
+            await msg.delete()
+        except:
+            pass
 
-# Запуск
-async def main():
-    from os import getenv
-    token = getenv("BOT_TOKEN")
-    app = ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler("дозволити", дозволити))
-    app.add_handler(CommandHandler("заборонити", заборонити))
-    app.add_handler(CommandHandler("автовидалення", автовидалення))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
-    await app.run_polling()
+# --- Запуск бота ---
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("допомога", help_command))
+    app.add_handler(CommandHandler("дозвіл", allow_command))
+    app.add_handler(CommandHandler("очищення", clean_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
