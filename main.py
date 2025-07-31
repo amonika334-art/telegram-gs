@@ -1,7 +1,4 @@
-
-import logging
 import os
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,90 +7,52 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+from dotenv import load_dotenv
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# 👤 Дозволені користувачі для кожної гілки
-ALLOWED_USERS = {
-    "чат": [123456789],       # 🔁 заміни на справжній user_id
-    "тех": [987654321],       # 🔁 заміни на справжній user_id
-    "новини": []
+# Дозволені user_id (адміністратори)
+ALLOWED_USER_IDS = [309352555]  # ← твій Telegram ID
+RESTRICTED_TOPICS = {"admin", "only-admins"}  # топіки, куди звичайним користувачам не можна писати
+AUTO_CLEAN_TOPICS = {
+    "chat": 60 * 60 * 24 * 7,  # автоочищення через 7 днів
 }
 
-# 🧹 Конфіг автоочищення повідомлень
-AUTO_CLEAN_CONFIG = {
-    "чат": {"days": 1},
-    "новини": {"weeks": 1}
-}
-
-# 🔧 Логи
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-# ✅ Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Вітаю! Я бот для керування гілками Telegram.")
+    await update.message.reply_text("Бот працює!")
 
-# ❓ Допомога
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📌 Команди:\n"
-        "/start — запустити бота\n"
-        "/help — допомога\n"
-        "/додай_гілку [назва] — додати нову гілку\n"
-        "/очищення [назва] [днів|тижнів] [кількість] — автоочищення повідомлень"
-    )
+    await update.message.reply_text("Це Telegram бот з контролем доступу та автоочищенням.")
 
-# ⛔ Невідома команда
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⚠️ Невідома команда. Напишіть /help для списку доступних.")
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user_id = message.from_user.id
+    topic = message.message_thread_id
 
-# ➕ Додати гілку
-async def додай_гілку(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("✏️ Вкажіть назву гілки. Наприклад: /додай_гілку чат")
-        return
+    if topic:
+        topic_title = (await context.bot.get_forum_topic(chat_id=message.chat_id, message_thread_id=topic)).name.lower()
 
-    branch = context.args[0].lower()
-    if branch in ALLOWED_USERS:
-        await update.message.reply_text(f"⚠️ Гілка '{branch}' вже існує.")
-    else:
-        ALLOWED_USERS[branch] = [update.message.from_user.id]
-        await update.message.reply_text(f"✅ Гілка '{branch}' додана для {update.message.from_user.first_name}.")
+        if topic_title in RESTRICTED_TOPICS and user_id not in ALLOWED_USER_IDS:
+            await message.delete()
+            return
 
-# 🧼 Автоочищення
-async def очищення(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        branch = context.args[0].lower()
-        unit = context.args[1]
-        amount = int(context.args[2])
+        if topic_title in AUTO_CLEAN_TOPICS:
+            delete_after = AUTO_CLEAN_TOPICS[topic_title]
+            context.job_queue.run_once(
+                lambda ctx: ctx.bot.delete_message(chat_id=message.chat_id, message_id=message.message_id),
+                when=delete_after,
+                name=f"auto-delete-{message.message_id}"
+            )
 
-        if unit not in ("днів", "тижнів"):
-            raise ValueError()
-
-        config = {"days": amount} if unit == "днів" else {"weeks": amount}
-        AUTO_CLEAN_CONFIG[branch] = config
-
-        await update.message.reply_text(f"✅ Очищення для гілки '{branch}' встановлено на {amount} {unit}.")
-
-    except Exception:
-        await update.message.reply_text("❌ Синтаксис: /очищення [назва] [днів|тижнів] [кількість]")
-
-# ▶️ Запуск
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("додай_гілку", додай_гілку))
-    app.add_handler(CommandHandler("очищення", очищення))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🤖 Бот запущено...")
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
