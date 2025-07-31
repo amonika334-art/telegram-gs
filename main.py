@@ -1,105 +1,99 @@
+
 import logging
-import asyncio
-from datetime import datetime, timedelta
+import os
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters
 )
-import os
 
-TOKEN = os.getenv("BOT_TOKEN")
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# --- Налаштування прав ---
+# 👤 Дозволені користувачі для кожної гілки
 ALLOWED_USERS = {
-    "чат": [],  # Сюди ID користувачів, яким дозволено писати в гілку "чат"
-    "аналітика": [],  # інші гілки за потреби
+    "чат": [123456789],       # 🔁 заміни на справжній user_id
+    "тех": [987654321],       # 🔁 заміни на справжній user_id
+    "новини": []
 }
 
-DELETE_TIMEOUTS = {
-    "чат": timedelta(days=2),
-    "аналітика": timedelta(weeks=1)
+# 🧹 Конфіг автоочищення повідомлень
+AUTO_CLEAN_CONFIG = {
+    "чат": {"days": 1},
+    "новини": {"weeks": 1}
 }
 
-# --- Логування ---
+# 🔧 Логи
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-# --- Обробник /start ---
+# ✅ Старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привіт! Я чат-бот контролю. Напиши /допомога")
+    await update.message.reply_text("👋 Вітаю! Я бот для керування гілками Telegram.")
 
-# --- Обробник /допомога ---
+# ❓ Допомога
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/дозвіл [гілка] [user_id] — дозволити користувачу писати в гілку
-"
-        "/очищення [гілка] [кількість_днів|тижнів] — встановити автоочищення
-"
+        "📌 Команди:\n"
+        "/start — запустити бота\n"
+        "/help — допомога\n"
+        "/додай_гілку [назва] — додати нову гілку\n"
+        "/очищення [назва] [днів|тижнів] [кількість] — автоочищення повідомлень"
     )
 
-# --- Обробка дозволу ---
-async def allow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("Формат: /дозвіл [гілка] [user_id]")
-        return
-    thread, user_id = context.args
-    if thread not in ALLOWED_USERS:
-        await update.message.reply_text("Невідома гілка.")
-        return
-    ALLOWED_USERS[thread].append(int(user_id))
-    await update.message.reply_text(f"Користувачу {user_id} дозволено писати в гілку {thread}.")
+# ⛔ Невідома команда
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⚠️ Невідома команда. Напишіть /help для списку доступних.")
 
-# --- Обробка автоочищення ---
-async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 2:
-        await update.message.reply_text("Формат: /очищення [гілка] [час]")
+# ➕ Додати гілку
+async def додай_гілку(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("✏️ Вкажіть назву гілки. Наприклад: /додай_гілку чат")
         return
-    thread, time = context.args
-    if "тиж" in time:
-        days = int(time.split("тиж")[0]) * 7
+
+    branch = context.args[0].lower()
+    if branch in ALLOWED_USERS:
+        await update.message.reply_text(f"⚠️ Гілка '{branch}' вже існує.")
     else:
-        days = int(time)
-    DELETE_TIMEOUTS[thread] = timedelta(days=days)
-    await update.message.reply_text(f"Очищення гілки {thread} встановлено на {days} днів.")
+        ALLOWED_USERS[branch] = [update.message.from_user.id]
+        await update.message.reply_text(f"✅ Гілка '{branch}' додана для {update.message.from_user.first_name}.")
 
-# --- Обробка повідомлень ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    thread = msg.message_thread_id or "чат"  # За замовчуванням - гілка "чат"
-    user_id = msg.from_user.id
+# 🧼 Автоочищення
+async def очищення(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        branch = context.args[0].lower()
+        unit = context.args[1]
+        amount = int(context.args[2])
 
-    thread_str = "чат"  # Можна додати логіку для відповідності ID гілці
-    allowed = ALLOWED_USERS.get(thread_str, [])
+        if unit not in ("днів", "тижнів"):
+            raise ValueError()
 
-    if allowed and user_id not in allowed:
-        try:
-            await msg.delete()
-        except:
-            pass
-        return
+        config = {"days": amount} if unit == "днів" else {"weeks": amount}
+        AUTO_CLEAN_CONFIG[branch] = config
 
-    timeout = DELETE_TIMEOUTS.get(thread_str)
-    if timeout:
-        await asyncio.sleep(timeout.total_seconds())
-        try:
-            await msg.delete()
-        except:
-            pass
+        await update.message.reply_text(f"✅ Очищення для гілки '{branch}' встановлено на {amount} {unit}.")
 
-# --- Запуск бота ---
+    except Exception:
+        await update.message.reply_text("❌ Синтаксис: /очищення [назва] [днів|тижнів] [кількість]")
+
+# ▶️ Запуск
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("допомога", help_command))
-    app.add_handler(CommandHandler("дозвіл", allow_command))
-    app.add_handler(CommandHandler("очищення", clean_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("додай_гілку", додай_гілку))
+    app.add_handler(CommandHandler("очищення", очищення))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    print("🤖 Бот запущено...")
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
