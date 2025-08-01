@@ -12,21 +12,17 @@ from telegram.ext import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Дозволені user_id (адміністратори)
-ALLOWED_USER_IDS = [309352555]  # ← твій Telegram ID
-RESTRICTED_TOPICS = {"admin", "only-admins"}  # теми, куди звичайним користувачам не можна писати
+ALLOWED_USER_IDS = [309352555]
+RESTRICTED_TOPICS = {"admin", "only-admins"}
 AUTO_CLEAN_TOPICS = {
-    "chat": 60 * 60 * 24 * 7  # автозачищення через 7 днів
+    "chat": 60 * 60 * 24 * 7
 }
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Бот працює!")
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Це Telegram бот з контролем доступу та автоочищенням.")
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -39,12 +35,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_thread_id=topic
         )).name.lower()
 
-        # якщо тема обмежена і користувач не має прав
         if topic_title in RESTRICTED_TOPICS and user_id not in ALLOWED_USER_IDS:
             await message.delete()
             return
 
-        # якщо тема потребує автоочищення
         if topic_title in AUTO_CLEAN_TOPICS:
             delete_after = AUTO_CLEAN_TOPICS[topic_title]
             context.job_queue.run_once(
@@ -55,7 +49,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 when=delete_after,
                 name=f"auto-delete-{message.message_id}"
             )
-
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -69,8 +62,6 @@ async def main():
     await app.updater.start_polling()
     await app.updater.idle()
 
-
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-
